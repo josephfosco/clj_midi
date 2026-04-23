@@ -1,0 +1,220 @@
+Here’s a **minimal but real-world Clojure project skeleton** that combines **core.async + MIDI input** with a clean REPL workflow.
+
+This is designed so you can:
+
+* receive MIDI events
+* push them into async channels
+* process them with go-loops
+* iterate live in the REPL
+
+---
+
+# 📁 Project structure
+
+```
+midi-async/
+├── deps.edn
+└── src/
+    └── midi_async/
+        ├── core.clj
+        ├── midi.clj
+        └── engine.clj
+```
+
+---
+
+# 📦 `deps.edn`
+
+```clojure
+{:paths ["src"]
+ :deps {org.clojure/clojure {:mvn/version "1.11.1"}
+        org.clojure/core.async {:mvn/version "1.6.681"}}}
+```
+
+---
+
+# 🎹 `midi.clj` — MIDI input → async channel
+
+This uses Java’s built-in MIDI (`javax.sound.midi`).
+
+```clojure
+(ns midi-async.midi
+  (:require [clojure.core.async :as async])
+  (:import [javax.sound.midi MidiSystem MidiDevice Receiver ShortMessage]))
+
+(defn list-devices []
+  (MidiSystem/getMidiDeviceInfo))
+
+(defn open-input-device
+  "Open a MIDI input device by index"
+  [idx]
+  (let [info (nth (MidiSystem/getMidiDeviceInfo) idx)
+        device (MidiSystem/getMidiDevice info)]
+    (.open device)
+    device))
+
+(defn midi->map [^ShortMessage msg]
+  {:command (.getCommand msg)
+   :channel (.getChannel msg)
+   :data1 (.getData1 msg)
+   :data2 (.getData2 msg)})
+
+(defn start-listener
+  "Returns a channel of MIDI events"
+  [device]
+  (let [out (async/chan 100)]
+    (let [receiver
+          (reify Receiver
+            (send [_ msg timestamp]
+              (when (instance? ShortMessage msg)
+                (async/put! out (assoc (midi->map msg)
+                                       :timestamp timestamp))))
+            (close [_]))]
+      (.setReceiver (.getTransmitter device) receiver))
+    out))
+```
+
+---
+
+# ⚙️ `engine.clj` — async processing
+
+```clojure
+(ns midi-async.engine
+  (:require [clojure.core.async :as async]))
+
+(defn start-engine
+  "Consumes MIDI events and processes them"
+  [in-chan]
+  (async/go-loop []
+    (when-let [event (async/<! in-chan)]
+      (println "MIDI EVENT:" event)
+
+      ;; example: detect note-on
+      (when (= 144 (:command event))
+        (println "NOTE ON:" (:data1 event)))
+
+      (recur))))
+```
+
+---
+
+# 🚀 `core.clj` — wiring everything together
+
+```clojure
+(ns midi-async.core
+  (:require [midi-async.midi :as midi]
+            [midi-async.engine :as engine]))
+
+(defonce system (atom nil))
+
+(defn start! []
+  (println "Available MIDI devices:")
+  (doseq [[i info] (map-indexed vector (midi/list-devices))]
+    (println i ":" (.getName info)))
+
+  ;; change index to your MIDI device
+  (let [device (midi/open-input-device 0)
+        ch (midi/start-listener device)]
+    (engine/start-engine ch)
+    (reset! system {:device device :channel ch})
+    (println "System started")))
+
+(defn stop! []
+  (when-let [{:keys [device]} @system]
+    (.close device)
+    (reset! system nil)
+    (println "System stopped")))
+```
+
+---
+
+# 🧪 REPL workflow (this is the important part)
+
+Start REPL in project folder:
+
+```bash
+clj
+```
+
+Then:
+
+```clojure
+(require '[midi-async.core :as core])
+
+(core/start!)
+```
+
+Play MIDI → you’ll see events print.
+
+---
+
+# 🔁 Live coding workflow (no restart)
+
+When you edit files:
+
+```clojure
+(require '[midi-async.engine :as engine] :reload)
+```
+
+or reload everything:
+
+```clojure
+(require 'midi-async.core :reload-all)
+```
+
+---
+
+# 🎯 Next steps (very useful upgrades)
+
+## 1. Filter specific messages
+
+```clojure
+(filter #(= 144 (:command %)) ch)
+```
+
+## 2. Add timing / scheduling
+
+Use `async/timeout` for clocking:
+
+```clojure
+(async/go-loop []
+  (async/<! (async/timeout 10))
+  ;; do scheduled work
+  (recur))
+```
+
+## 3. Multiple channels (fan-out)
+
+```clojure
+(async/mult ch)
+```
+
+## 4. Bridge to sound engines
+
+* SuperCollider
+* Overtone
+
+---
+
+# ⚠️ Common gotchas (you hit one already)
+
+* If you see:
+
+  ```
+  MidiUnavailableException
+  ```
+
+  → device already in use OR wrong index
+
+* If no events:
+  → you opened an output device instead of input
+
+---
+
+If you want, I can extend this into:
+
+* **accurate clock + sequencer (tight timing)**
+* **mapping MIDI → synth parameters**
+* **SuperCollider bridge with OSC**
+
+Just tell me 👍
